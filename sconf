@@ -35,7 +35,7 @@ class Config:
                 sys.exit(1)
 
     def _get_data(self, file_path, context=None):
-        data = []
+        data = None
 
         if os.path.exists(file_path) and os.path.isfile(file_path):
             with open(file_path, 'r') as content_yaml:
@@ -85,28 +85,44 @@ class Files:
         return tmp_file.name
 
     def copy(self, config, module_path, context={}):
-        files_path = os.path.join(module_path, 'templates')
+        if config is None:
+            config = {}
+
+        files_path = os.path.join(module_path, 'files')
 
         if os.path.isdir(files_path):
             local_variables = config.get('variables', {})
 
-            for file_path in pathlib.Path(files_path).rglob('*.jinja'):
-                src_path = os.path.dirname(file_path)
-                context = {**context, **local_variables}
+            for file_path in pathlib.Path(files_path).rglob('*'):
+                if os.path.isdir(file_path):
+                    continue
 
-                tmp_path = self._render_template(
-                    file_path,
-                    context=context,
-                )
+                file_name, file_extension = os.path.splitext(file_path)
+                src_path = os.path.dirname(file_path)
+
+                if file_extension == '.jinja':
+                    context = {**context, **local_variables}
+
+                    tmp_path = self._render_template(
+                        file_path,
+                        context=context,
+                    )
 
                 dest_path = os.path.join(
                     src_path.replace(files_path, ''),
-                    file_path.name[:-6]
+                    file_path.name,
                 )
 
-                shutil.copyfile(tmp_path, dest_path)
-
-                os.remove(tmp_path)
+                if file_extension == '.jinja':
+                    shutil.copyfile(tmp_path, dest_path[:-6])
+                    os.remove(tmp_path)
+                else:
+                    if os.path.islink(file_path):
+                        linkto = os.readlink(file_path)
+                        os.remove(dest_path)
+                        os.symlink(linkto, dest_path)
+                    else:
+                        shutil.copyfile(file_path, dest_path) 
 
                 print('├─ Copy %s' % dest_path)
 
@@ -114,6 +130,9 @@ class Files:
 class Packages:
     @staticmethod
     def install(config):
+        if config is None:
+            return
+
         pkgs = config.get('packages', [])
 
         for pkg in pkgs:
@@ -153,6 +172,9 @@ class Services:
         )
 
     def check(self, config):
+        if config is None:
+            return
+
         services = config.get('services', [])
 
         for service, data in services.items():
@@ -253,7 +275,7 @@ class ServerConf:
                 module,
                 context=self.variables,
             )
-
+            
             Packages().install(config)
 
             Files().copy(
