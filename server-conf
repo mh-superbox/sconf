@@ -1,0 +1,304 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import jinja2
+import yaml
+
+BASE_PATH = "/etc/server-conf/"
+MODULES_PATH = os.path.join(BASE_PATH, "modules")
+
+
+class Color:
+    BOLD = '\033[1m'
+    END = '\033[0m'
+
+
+class Config:
+    def __init__(self):
+        for path in [BASE_PATH, MODULES_PATH]:
+            if not os.path.exists(path):
+                print(
+                    "Directory %s%s%s does not exist!" % (
+                        Color.BOLD,
+                        path,
+                        Color.END,
+                    )
+                )
+
+                sys.exit(1)
+
+    def _get_data(self, file_path, context=None):
+        data = []
+
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            with open(file_path, 'r') as content_yaml:
+                content = content_yaml.read()
+
+                if context:
+                    template = jinja2.Template(content)
+                    content = template.render(**context)
+
+                try:
+                    data = yaml.load(content, Loader=yaml.BaseLoader)
+                except yaml.YAMLError as e:
+                    print(e)
+
+        return data
+
+    def module_data(self, module, context=None):
+        config_yaml = os.path.join(BASE_PATH, 'modules', module, 'config.yaml')
+
+        config = self._get_data(
+            config_yaml,
+            context=context,
+        )
+
+        return config
+
+    def global_data(self, file_name):
+        file_name = '%s.yaml' % file_name
+        data_yaml = os.path.join(BASE_PATH, 'global', file_name)
+        data = self._get_data(data_yaml)
+
+        return data
+
+
+class Files:
+    def _render_template(self, file_path, context={}):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+
+        with open(file_path) as content_file:
+            content = content_file.read()
+            template = jinja2.Template(content)
+            content = template.render(**context)
+
+        with open(tmp.name, 'w') as tmp_file:
+            tmp_file.write(content)
+
+        return tmp_file.name
+
+    def copy(self, config, module_path, context={}):
+        files_path = os.path.join(module_path, 'templates')
+
+        if os.path.isdir(files_path):
+            local_variables = config.get('variables', {})
+
+            for file_path in pathlib.Path(files_path).rglob('*.jinja'):
+                src_path = os.path.dirname(file_path)
+                context = {**context, **local_variables}
+
+                tmp_path = self._render_template(
+                    file_path,
+                    context=context,
+                )
+
+                dest_path = os.path.join(
+                    src_path.replace(files_path, ''),
+                    file_path.name[:-6]
+                )
+
+                shutil.copyfile(tmp_path, dest_path)
+
+                os.remove(tmp_path)
+
+                print('├─ Copy %s' % dest_path)
+
+
+class Packages:
+    @staticmethod
+    def install(config):
+        pkgs = config.get('packages', [])
+
+        for pkg in pkgs:
+            cmd = '/usr/bin/dpkg-query -W --showformat=\'${Status}\n\' %s'
+
+            proc = subprocess.Popen(
+                cmd % pkg,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            out = str(proc.communicate()[0])
+
+            if 'install ok installed' in out:
+                print('├─ Package [%s] already exists' % pkg)
+            else:
+                print('├─ Install package [%s]' % pkg)
+
+                subprocess.call(
+                    'sudo apt install -y %s' % pkg,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                )
+
+
+class Services:
+    def __init__(self):
+        cmd = 'sudo /bin/systemctl daemon-reload'
+
+        subprocess.call(
+            cmd,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+
+    def check(self, config):
+        services = config.get('services', [])
+
+        for service, data in services.items():
+            is_active = self.is_active(service)
+            is_enabled = self.is_enabled(service)
+
+            enabled = data.get('enabled', None)
+            ensure = data.get('ensure', None)
+
+            if enabled is not None:
+                if is_enabled is True and enabled == 'false':
+                    self.command(service, 'disable')
+                    print('├─ Service [%s] disabled' % service)
+                elif is_enabled is False and enabled == 'true':
+                    self.command(service, 'enable')
+                    print('├─ Service [%s] enabled' % service)
+
+            if ensure is not None:
+                if is_active is True and ensure == 'stopped':
+                    self.command(service, 'stop')
+                    print('├─ Service [%s] stopped' % service)
+                elif is_active is False and ensure == 'running':
+                    print('├─ Service [%s] started' % service)
+                    self.command(service, 'start')
+                elif ensure == 'running':
+                    print('├─ Service [%s] restarted' % service)
+                    self.command(service, 'restart')
+
+    def is_active(self, service):
+        cmd = '/bin/systemctl status %s' % service
+
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        out = str(proc.communicate()[0]).split('\n')
+
+        for line in out:
+            if 'Active:' in line:
+                if '(running)' in line or '(waiting)' in line:
+                    return True
+
+        return False
+
+    def is_enabled(self, service):
+        cmd = '/bin/systemctl status %s' % service
+
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        out = str(proc.communicate()[0]).split('\n')
+
+        for line in out:
+            if 'Loaded:' in line and '%s; enabled;' % service in line:
+                return True
+
+        return False
+
+    def command(self, service, status):
+        cmd = 'sudo /bin/systemctl %s %s' % (status, service)
+
+        subprocess.call(
+            cmd,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+
+
+class ServerConf:
+    def __init__(self):
+        self.variables = Config().global_data('variables')
+
+    def install_modules(self):
+        for module in os.listdir(MODULES_PATH):
+            self.install_module(module)
+
+    def install_module(self, module):
+        module_path = os.path.join(MODULES_PATH, module)
+
+        if os.path.isdir(module_path):
+            print(
+                '%sInstall %s module %s' % (
+                    Color.BOLD,
+                    os.path.basename(module_path),
+                    Color.END,
+                )
+            )
+
+            config = Config().module_data(
+                module,
+                context=self.variables,
+            )
+
+            Packages().install(config)
+
+            Files().copy(
+                config,
+                module_path,
+                context=self.variables,
+            )
+
+            Services().check(config)
+        else:
+            print(
+                'Module %s not found!' % (
+                    os.path.basename(module_path),
+                )
+            )
+
+
+def arguments():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        '-a',
+        '--all-modules',
+        action='store_true',
+        help='Install all module'
+    )
+
+    parser.add_argument(
+        '-m',
+        '--module',
+        help='Install module',
+    )
+
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+
+    args = parser.parse_args()
+
+    server_conf = ServerConf()
+
+    if args.all_modules:
+        server_conf.install_modules()
+    elif args.module:
+        server_conf.install_module(args.module)
+
+
+arguments()
