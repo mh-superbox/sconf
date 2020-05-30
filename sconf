@@ -114,7 +114,8 @@ class Files:
                 )
 
                 if file_extension == '.jinja':
-                    shutil.copyfile(tmp_path, dest_path[:-6])
+                    dest_path = dest_path[:-6]
+                    shutil.copyfile(tmp_path, dest_path)
                     os.remove(tmp_path)
                 else:
                     if os.path.islink(file_path):
