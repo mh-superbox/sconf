@@ -162,15 +162,12 @@ class Files:
                         copy_file = True
 
                         if file_extension == '.jinja':
-                            diff_output = self._diff(
-                                tmp_path,
-                                dest_path,
-                            )
-                        else:
-                            diff_output = self._diff(
-                                original_file_path,
-                                dest_path,
-                            )
+                            original_file_path = tmp_path
+
+                        diff_output = self._diff(
+                            original_file_path,
+                            dest_path,
+                        )
 
                         if os.path.islink(file_path):
                             print('├─ Update symlink %s' % dest_path)
@@ -216,7 +213,7 @@ class Packages:
                 pkg_dict = pkg
                 pkg = [*pkg_dict][0]
                 pkg_options = [*pkg_dict.values()][0]
-                ensure = pkg_options.get('ensure', 'installed')
+                ensure = pkg_options.get('ensure', ensure)
 
             proc = subprocess.Popen(
                 cmd % pkg,
@@ -268,12 +265,20 @@ class Services:
 
         services = config.get('services', [])
 
-        for service, data in services.items():
+        for service in services:
+            enabled = True
+            ensure = 'running'
+
+            if isinstance(service, dict):
+                service_dict = service
+                service = [*service_dict][0]
+                service_options = [*service_dict.values()][0]
+                print(service_options)
+                enabled = service_options.get('enabled', enabled)
+                ensure = service_options.get('ensure', ensure)
+
             is_active = self.is_active(service)
             is_enabled = self.is_enabled(service)
-
-            enabled = data.get('enabled', None)
-            ensure = data.get('ensure', None)
 
             if enabled is not None:
                 if is_enabled is True and enabled == 'false':
