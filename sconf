@@ -18,6 +18,8 @@ MODULES_PATH = os.path.join(BASE_PATH, "modules")
 
 
 class Color:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
     BOLD = '\033[1m'
     END = '\033[0m'
 
@@ -90,11 +92,16 @@ class Files:
         output = ''
 
         try:
-            text1 = open(file_path, 'r').readlines()
-            text2 = open(dest_path, 'r').readlines()
+            text1 = open(dest_path, 'r').readlines()
+            text2 = open(file_path, 'r').readlines()
 
             for line in difflib.unified_diff(text1, text2):
-                output += '   %s' % line
+                if line.startswith('+'):
+                    output += '   %s%s%s' % (Color.GREEN, line, Color.END)
+                elif line.startswith('-'):
+                    output += '   %s%s%s' % (Color.RED, line, Color.END)
+                else:
+                    output += '   %s' % line
         except UnicodeDecodeError:
             pass
 
