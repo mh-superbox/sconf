@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import difflib
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -84,6 +86,32 @@ class Files:
 
         return tmp_file.name
 
+    def _diff(self, file_path, dest_path):
+        output = ''
+
+        try:
+            text1 = open(file_path, 'r').readlines()
+            text2 = open(dest_path, 'r').readlines()
+
+            for line in difflib.unified_diff(text1, text2):
+                output += '   %s' % line
+        except UnicodeDecodeError:
+            pass
+
+        return output
+
+    def _is_modified(self, file_path, dest_path):
+        file_stat = os.stat(file_path)
+        dest_stat = os.stat(dest_path)
+
+        return file_stat.st_mtime > dest_stat.st_mtime
+
+    def _get_original_file_path(self, file_path):
+        if os.path.islink(file_path):
+            return os.readlink(file_path)
+
+        return file_path
+
     def copy(self, config, module_path, context={}):
         if config is None:
             config = {}
@@ -115,17 +143,54 @@ class Files:
 
                 if file_extension == '.jinja':
                     dest_path = dest_path[:-6]
-                    shutil.copyfile(tmp_path, dest_path)
-                    os.remove(tmp_path)
-                else:
-                    if os.path.islink(file_path):
-                        linkto = os.readlink(file_path)
-                        os.remove(dest_path)
-                        os.symlink(linkto, dest_path)
-                    else:
-                        shutil.copyfile(file_path, dest_path) 
 
-                print('├─ Copy %s' % dest_path)
+                original_file_path = self._get_original_file_path(file_path)
+                diff_output = None
+                copy_file = False
+
+                if os.path.exists(dest_path):
+                    is_modified = self._is_modified(file_path, dest_path)
+
+                    if is_modified:
+                        copy_file = True
+
+                        if file_extension == '.jinja':
+                            diff_output = self._diff(
+                                tmp_path,
+                                dest_path,
+                            )
+                        else:
+                            diff_output = self._diff(
+                                original_file_path,
+                                dest_path,
+                            )
+
+                        if os.path.islink(file_path):
+                            print('├─ Update symlink %s' % dest_path)
+                        else:
+                            print('├─ Update file %s' % dest_path)
+                else:
+                    copy_file = True
+
+                    if os.path.islink(file_path):
+                        print('├─ Create symlink %s' % dest_path)
+                    else:
+                        print('├─ Create file %s' % dest_path)
+
+                if copy_file is True:
+                    if file_extension == '.jinja':
+                        shutil.copyfile(tmp_path, dest_path)
+                        os.remove(tmp_path)
+                    else:
+                        if os.path.islink(file_path):
+                            linkto = os.readlink(file_path)
+                            os.remove(dest_path)
+                            os.symlink(linkto, dest_path)
+                        else:
+                            shutil.copyfile(file_path, dest_path)
+
+                if diff_output:
+                    print(diff_output)
 
 
 class Packages:
@@ -138,6 +203,13 @@ class Packages:
 
         for pkg in pkgs:
             cmd = '/usr/bin/dpkg-query -W --showformat=\'${Status}\n\' %s'
+            ensure = 'installed'
+
+            if isinstance(pkg, dict):
+                pkg_dict = pkg
+                pkg = [*pkg_dict][0]
+                pkg_options = [*pkg_dict.values()][0]
+                ensure = pkg_options.get('ensure', 'installed')
 
             proc = subprocess.Popen(
                 cmd % pkg,
@@ -147,14 +219,25 @@ class Packages:
             )
 
             out = str(proc.communicate()[0])
+            apt_cmd = None
 
-            if 'install ok installed' in out:
-                print('├─ Package [%s] already exists' % pkg)
-            else:
-                print('├─ Install package [%s]' % pkg)
+            if ensure == 'installed':
+                if 'install ok installed' in out:
+                    print('├─ Package [%s] already installed' % pkg)
+                else:
+                    apt_cmd = 'install'
+                    print('├─ Install package [%s]' % pkg)
+            elif ensure == 'purged':
+                if 'no packages found' not in out:
+                    apt_cmd = 'purge'
+                    print('├─ Purge package [%s]' % pkg)
 
+            if apt_cmd:
                 subprocess.call(
-                    'sudo apt install -y %s' % pkg,
+                    'sudo apt %s -y %s' % (
+                        apt_cmd,
+                        pkg,
+                    ),
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.STDOUT,
@@ -217,9 +300,14 @@ class Services:
         out = str(proc.communicate()[0]).split('\n')
 
         for line in out:
-            if 'Active:' in line:
-                if '(running)' in line or '(waiting)' in line:
-                    return True
+            search_obj = re.search(
+                r'^.*Active:\sactive\s\((running|waiting|exited)\).*$',
+                line,
+                re.M | re.I,
+            )
+
+            if search_obj:
+                return True
 
         return False
 
@@ -236,7 +324,13 @@ class Services:
         out = str(proc.communicate()[0]).split('\n')
 
         for line in out:
-            if 'Loaded:' in line and '%s; enabled;' % service in line:
+            search_obj = re.search(
+                r'^.*Loaded:\sloaded\s(.*\senabled;\s.*).*$',
+                line,
+                re.M | re.I,
+            )
+
+            if search_obj:
                 return True
 
         return False
@@ -276,7 +370,7 @@ class ServerConf:
                 module,
                 context=self.variables,
             )
-            
+
             Packages().install(config)
 
             Files().copy(
