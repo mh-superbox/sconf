@@ -287,7 +287,7 @@ class Packages:
                     apt_cmd = 'install'
                     print('├─ Install package [%s]' % pkg)
             elif ensure == 'purged':
-                if 'no packages found' not in out:
+                if 'install ok installed' in out:
                     apt_cmd = 'purge'
                     print('├─ Purge package [%s]' % pkg)
 
@@ -304,7 +304,9 @@ class Packages:
 
 
 class Services:
-    def __init__(self):
+    def __init__(self, args):
+        self.args = args
+
         cmd = 'sudo /bin/systemctl daemon-reload'
 
         subprocess.call(
@@ -350,8 +352,9 @@ class Services:
                     print('├─ Service [%s] started' % service)
                     self.command(service, 'start')
                 elif ensure == 'running':
-                    print('├─ Service [%s] restarted' % service)
-                    self.command(service, 'restart')
+                    if not self.args.no_service_restart:
+                        print('├─ Service [%s] restarted' % service)
+                        self.command(service, 'restart')
 
     def is_active(self, service):
         cmd = '/bin/systemctl status %s' % service
@@ -413,7 +416,8 @@ class Services:
 
 
 class ServerConf:
-    def __init__(self):
+    def __init__(self, args):
+        self.args = args
         self.variables = Config().global_data('variables')
 
     def install_modules(self):
@@ -431,7 +435,7 @@ class ServerConf:
             )
 
             print(text)
-            
+
             config = Config().module_data(
                 module,
                 context=self.variables,
@@ -445,7 +449,7 @@ class ServerConf:
                 context=self.variables,
             )
 
-            Services().check(config)
+            Services(self.args).check(config)
         else:
             text = 'Module %s not found!' % (
                 os.path.basename(module_path),
@@ -470,13 +474,19 @@ def arguments():
         help='Install module',
     )
 
+    parser.add_argument(
+        '-nsr',
+        '--no-service-restart',
+        action='store_true',
+        help='Services are not restarted',
+    )
+
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
 
     args = parser.parse_args()
-
-    server_conf = ServerConf()
+    server_conf = ServerConf(args)
 
     if args.all_modules:
         server_conf.install_modules()
@@ -485,3 +495,5 @@ def arguments():
 
 
 arguments()
+
+
