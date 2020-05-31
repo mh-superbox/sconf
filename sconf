@@ -11,10 +11,32 @@ import sys
 import tempfile
 
 import jinja2
+import jsonschema
 import yaml
 
 BASE_PATH = "/etc/sconf/"
 MODULES_PATH = os.path.join(BASE_PATH, "modules")
+
+# TODO: write schema validation for packages and services!
+
+SCHEMA = {
+    'module_config': {
+        '$schema': 'http://json-schema.org/draft/2019-09/schema#',
+        'type': 'object',
+        'properties': {
+            'packages': {
+                'type': 'array',
+            },
+            'services': {
+                'type': 'array',
+            },
+            'variables': {
+                'type': 'object',
+            },
+        },
+        'additionalProperties': False,
+    }
+}
 
 
 class Color:
@@ -23,25 +45,30 @@ class Color:
     BOLD = '\033[1m'
     END = '\033[0m'
 
+    def text(self, color, text):
+        return '%s%s%s' % (
+            getattr(self, color), text, self.END
+        )
+
 
 class Config:
     def __init__(self):
         for path in [BASE_PATH, MODULES_PATH]:
             if not os.path.exists(path):
-                print(
-                    "Directory %s%s%s does not exist!" % (
-                        Color.BOLD,
-                        path,
-                        Color.END,
-                    )
+                text = 'Directory %s%s%s does not exist!' % (
+                    Color.BOLD,
+                    path,
+                    Color.END,
                 )
 
+                print(text)
                 sys.exit(1)
 
-    def _get_data(self, file_path, context=None):
+    def _get_data(self, file_path, schema=None, context=None):
         data = None
+        text = '%s\n' % file_path
 
-        if os.path.exists(file_path) and os.path.isfile(file_path):
+        try:
             with open(file_path, 'r') as content_yaml:
                 content = content_yaml.read()
 
@@ -49,10 +76,30 @@ class Config:
                     template = jinja2.Template(content)
                     content = template.render(**context)
 
-                try:
-                    data = yaml.load(content, Loader=yaml.BaseLoader)
-                except yaml.YAMLError as e:
-                    print(e)
+                data = yaml.load(content, Loader=yaml.BaseLoader)
+
+                if schema:
+                    try:
+                        jsonschema.validate(instance=data, schema=schema)
+                    except jsonschema.exceptions.ValidationError as error:
+                        print(error)
+                        sys.exit(1)
+        except IOError:
+            text += Color().text(
+                'RED',
+                'YAML file can not be read!'
+            )
+
+            print(text)
+            sys.exit(1)
+        except yaml.YAMLError:
+            text += Color().text(
+                'RED',
+                'Failed loading config file because the YAML is invalid!'
+            )
+
+            print(text)
+            sys.exit(1)
 
         return data
 
@@ -61,6 +108,7 @@ class Config:
 
         config = self._get_data(
             config_yaml,
+            schema=SCHEMA['module_config'],
             context=context,
         )
 
@@ -81,7 +129,15 @@ class Files:
         with open(file_path) as content_file:
             content = content_file.read()
             template = jinja2.Template(content)
-            content = template.render(**context)
+
+            try:
+                content = template.render(**context)
+            except jinja2.exceptions.UndefinedError as error:
+                text = '%s\n' % file_path
+                text += Color().text('RED', error)
+
+                print(text)
+                sys.exit(1)
 
         with open(tmp.name, 'w') as tmp_file:
             tmp_file.write(content)
@@ -97,11 +153,11 @@ class Files:
 
             for line in difflib.unified_diff(text1, text2):
                 if line.startswith('+'):
-                    output += '   %s%s%s' % (Color.GREEN, line, Color.END)
+                    line = '%s%s%s' % (Color.GREEN, line, Color.END)
                 elif line.startswith('-'):
-                    output += '   %s%s%s' % (Color.RED, line, Color.END)
-                else:
-                    output += '   %s' % line
+                    line = '%s%s%s' % (Color.RED, line, Color.END)
+
+                output += '   %s' % line
         except UnicodeDecodeError:
             pass
 
@@ -135,6 +191,11 @@ class Files:
                 file_name, file_extension = os.path.splitext(file_path)
                 src_path = os.path.dirname(file_path)
 
+                dest_path = os.path.join(
+                    src_path.replace(files_path, ''),
+                    file_path.name,
+                )
+
                 if file_extension == '.jinja':
                     context = {**context, **local_variables}
 
@@ -143,12 +204,6 @@ class Files:
                         context=context,
                     )
 
-                dest_path = os.path.join(
-                    src_path.replace(files_path, ''),
-                    file_path.name,
-                )
-
-                if file_extension == '.jinja':
                     dest_path = dest_path[:-6]
 
                 original_file_path = self._get_original_file_path(file_path)
@@ -273,7 +328,6 @@ class Services:
                 service_dict = service
                 service = [*service_dict][0]
                 service_options = [*service_dict.values()][0]
-                print(service_options)
                 enabled = service_options.get('enabled', enabled)
                 ensure = service_options.get('ensure', ensure)
 
@@ -337,7 +391,7 @@ class Services:
 
         for line in out:
             search_obj = re.search(
-                r'^.*Loaded:\sloaded\s(.*\senabled;\s.*).*$',
+                r'^.*Loaded:\sloaded\s(.*\s(static|enabled);\s.*).*$',
                 line,
                 re.M | re.I,
             )
@@ -370,12 +424,10 @@ class ServerConf:
         module_path = os.path.join(MODULES_PATH, module)
 
         if os.path.isdir(module_path):
-            print(
-                '%sInstall %s module %s' % (
-                    Color.BOLD,
-                    os.path.basename(module_path),
-                    Color.END,
-                )
+            text = '%sInstall %s module %s' % (
+                Color.BOLD,
+                os.path.basename(module_path),
+                Color.END,
             )
 
             config = Config().module_data(
@@ -393,11 +445,11 @@ class ServerConf:
 
             Services().check(config)
         else:
-            print(
-                'Module %s not found!' % (
-                    os.path.basename(module_path),
-                )
+            text = 'Module %s not found!' % (
+                os.path.basename(module_path),
             )
+
+            print(text)
 
 
 def arguments():
