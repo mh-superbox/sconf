@@ -430,6 +430,8 @@ class ServerConf:
                 Color.END,
             )
 
+            print(text)
+            
             config = Config().module_data(
                 module,
                 context=self.variables,
