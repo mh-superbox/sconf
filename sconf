@@ -26,10 +26,10 @@ SCHEMA = {
         'type': 'object',
         'properties': {
             'packages': {
-                'type': 'array',
+                'type': 'object',
             },
             'services': {
-                'type': 'array',
+                'type': 'object',
             },
             'variables': {
                 'type': 'object',
@@ -270,15 +270,12 @@ class Packages:
             return
 
         pkgs = config.get('packages', [])
+        cmd = '/usr/bin/dpkg-query -W --showformat=\'${Status}\n\' %s'
 
-        for pkg in pkgs:
-            cmd = '/usr/bin/dpkg-query -W --showformat=\'${Status}\n\' %s'
+        for pkg, pkg_options in pkgs.items():
             ensure = 'installed'
-
-            if isinstance(pkg, dict):
-                pkg_dict = pkg
-                pkg = [*pkg_dict][0]
-                pkg_options = [*pkg_dict.values()][0]
+            
+            if isinstance(pkg_options, dict):
                 ensure = pkg_options.get('ensure', ensure)
 
             proc = subprocess.Popen(
@@ -341,19 +338,11 @@ class Services:
         if config is None:
             return
 
-        services = config.get('services', [])
+        services = config.get('services', {})
 
-        for service in services:
-            enabled = True
-            ensure = 'running'
-
-            if isinstance(service, dict):
-                service_dict = service
-                service = [*service_dict][0]
-                service_options = [*service_dict.values()][0]
-                enabled = service_options.get('enabled', enabled)
-                ensure = service_options.get('ensure', ensure)
-
+        for service, service_options in services.items():
+            enabled = service_options.get('enabled', True)
+            ensure = service_options.get('ensure', 'running')
             exists = self.exists(service)
 
             if not exists:
@@ -455,6 +444,7 @@ class ServerConf:
         for module in os.listdir(MODULES_PATH):
             self.install_module(module)
 
+    # TODO: Added YAML file for module install order and enable/disable option!
     def install_module(self, module):
         module_path = os.path.join(MODULES_PATH, module)
 
