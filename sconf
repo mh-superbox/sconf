@@ -92,13 +92,14 @@ class Config:
 
             print(text)
             sys.exit(1)
-        except yaml.YAMLError:
+        except yaml.YAMLError as error:
             text += Color().text(
                 'RED',
                 'Failed loading config file because the YAML is invalid!'
             )
 
             print(text)
+            print(error)
             sys.exit(1)
 
         return data
@@ -281,9 +282,7 @@ class Packages:
             apt_cmd = None
 
             if ensure == 'installed':
-                if 'install ok installed' in out:
-                    print('├─ Package [%s] already installed' % pkg)
-                else:
+                if 'install ok installed' not in out:
                     apt_cmd = 'install'
                     print('├─ Install package [%s]' % pkg)
             elif ensure == 'purged':
@@ -316,6 +315,18 @@ class Services:
             stderr=subprocess.STDOUT,
         )
 
+    def _status(self, service):
+        cmd = '/bin/systemctl status %s' % service
+
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        return proc.communicate()
+
     def check(self, config):
         if config is None:
             return
@@ -332,6 +343,17 @@ class Services:
                 service_options = [*service_dict.values()][0]
                 enabled = service_options.get('enabled', enabled)
                 ensure = service_options.get('ensure', ensure)
+
+            exists = self.exists(service)
+
+            if not exists:
+                text = Color().text(
+                    'RED',
+                    '├─ Service [%s] not exists!' % service,
+                )
+
+                print(text)
+                sys.exit(1)
 
             is_active = self.is_active(service)
             is_enabled = self.is_enabled(service)
@@ -356,19 +378,25 @@ class Services:
                         print('├─ Service [%s] restarted' % service)
                         self.command(service, 'restart')
 
+    def exists(self, service):
+        out, error = self._status(service)
+
+        for line in str(out).split('\n'):
+            search_obj = re.search(
+                r'^.*Unit\s.*\scould\snot\sbe\sfound.*$',
+                line,
+                re.M | re.I,
+            )
+
+            if search_obj:
+                return False
+
+        return True
+
     def is_active(self, service):
-        cmd = '/bin/systemctl status %s' % service
+        out, error = self._status(service)
 
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-
-        out = str(proc.communicate()[0]).split('\n')
-
-        for line in out:
+        for line in str(out).split('\n'):
             search_obj = re.search(
                 r'^.*Active:\sactive\s\((running|waiting|exited)\).*$',
                 line,
@@ -381,18 +409,9 @@ class Services:
         return False
 
     def is_enabled(self, service):
-        cmd = '/bin/systemctl status %s' % service
+        out, error = self._status(service)
 
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-
-        out = str(proc.communicate()[0]).split('\n')
-
-        for line in out:
+        for line in str(out).split('\n'):
             search_obj = re.search(
                 r'^.*Loaded:\sloaded\s(.*\s(static|enabled);\s.*).*$',
                 line,
@@ -407,12 +426,14 @@ class Services:
     def command(self, service, status):
         cmd = 'sudo /bin/systemctl %s %s' % (status, service)
 
-        subprocess.call(
+        proc = subprocess.Popen(
             cmd,
             shell=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
+
+        out, error = proc.communicate()
 
 
 class ServerConf:
@@ -495,5 +516,3 @@ def arguments():
 
 
 arguments()
-
-
