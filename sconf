@@ -18,6 +18,7 @@ BASE_PATH = "/etc/sconf/"
 MODULES_PATH = os.path.join(BASE_PATH, "modules")
 
 # TODO: write schema validation for packages and services!
+# TODO: write regex check for package, service and variables names!
 
 SCHEMA = {
     'module_config': {
@@ -237,17 +238,26 @@ class Files:
                     else:
                         print('├─ Create file %s' % dest_path)
 
-                if copy_file is True:
-                    if file_extension == '.jinja':
-                        shutil.copyfile(tmp_path, dest_path)
-                        os.remove(tmp_path)
-                    else:
-                        if os.path.islink(file_path):
-                            linkto = os.readlink(file_path)
-                            os.remove(dest_path)
-                            os.symlink(linkto, dest_path)
+                try:
+                    if copy_file is True:
+                        if file_extension == '.jinja':
+                            shutil.copyfile(tmp_path, dest_path)
+                            os.remove(tmp_path)
                         else:
-                            shutil.copyfile(file_path, dest_path)
+                            if os.path.islink(file_path):
+                                linkto = os.readlink(file_path)
+                                os.remove(dest_path)
+                                os.symlink(linkto, dest_path)
+                            else:
+                                shutil.copyfile(file_path, dest_path)
+                except FileNotFoundError as error:
+                    text = Color().text(
+                        'RED',
+                        'File or directory does not exist!',
+                    )
+
+                    print(text)
+                    sys.exit(1)
 
                 if diff_output:
                     print(diff_output)
