@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from pathlib import Path
 import argparse
 import difflib
 import os
@@ -141,6 +142,7 @@ class Files:
                 print(text)
                 sys.exit(1)
 
+        # TODO: copy owner, group and permission from src to tmp file
         with open(tmp.name, 'w') as tmp_file:
             tmp_file.write(content)
 
@@ -165,17 +167,37 @@ class Files:
 
         return output
 
-    def _is_modified(self, file_path, dest_path):
-        file_stat = os.stat(file_path)
-        dest_stat = os.stat(dest_path)
+    def _has_changed(self, src, dst):
+        path_src = Path(src)
+        path_dst = Path(dst)
+        
+        src_stat = path_src.stat()
+        dst_stat = path_dst.stat()
 
-        return file_stat.st_mtime > dest_stat.st_mtime
+        modified = src_stat.st_mtime > dst_stat.st_mtime 
+        owner_changed = src_stat.st_uid != dst_stat.st_uid
+        group_changed = src_stat.st_gid != dst_stat.st_gid
+        permission_changed = src_stat.st_mode != dst_stat.st_mode
+
+        return any(
+            [
+                modified,
+                owner_changed,
+                group_changed,
+                permission_changed,
+            ]
+        )
 
     def _get_original_file_path(self, file_path):
         if os.path.islink(file_path):
             return os.readlink(file_path)
 
         return file_path
+
+    def _copy(self, src, dst):
+        path_src = Path(src)
+        shutil.copy2(src, dst)
+        shutil.chown(dst, path_src.owner(), path_src.group())
 
     def copy(self, config, module_path, context={}):
         if config is None:
@@ -213,9 +235,9 @@ class Files:
                 copy_file = False
 
                 if os.path.exists(dest_path):
-                    is_modified = self._is_modified(file_path, dest_path)
+                    has_changed = self._has_changed(file_path, dest_path)
 
-                    if is_modified:
+                    if has_changed:
                         copy_file = True
 
                         if file_extension == '.jinja':
@@ -241,7 +263,7 @@ class Files:
                 try:
                     if copy_file is True:
                         if file_extension == '.jinja':
-                            shutil.copyfile(tmp_path, dest_path)
+                            self._copy(tmp_path, dest_path)
                             os.remove(tmp_path)
                         else:
                             if os.path.islink(file_path):
@@ -249,7 +271,7 @@ class Files:
                                 os.remove(dest_path)
                                 os.symlink(linkto, dest_path)
                             else:
-                                shutil.copyfile(file_path, dest_path)
+                                self._copy(file_path, dest_path)
                 except FileNotFoundError as error:
                     text = Color().text(
                         'RED',
@@ -342,7 +364,7 @@ class Services:
 
         for service, service_options in services.items():
             enabled = service_options.get('enabled', True)
-            ensure = service_options.get('ensure', 'running')
+            ensure = service_options.get('ensure', None)
             exists = self.exists(service)
 
             if not exists:
