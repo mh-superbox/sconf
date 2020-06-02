@@ -126,34 +126,43 @@ class Config:
 
 
 class Files:
-    def _render_template(self, file_path, context={}):
-        tmp = tempfile.NamedTemporaryFile(delete=False)
+    def _render_template(self, src, context={}):
+        tmp = self._create_tmp_file(src)
 
-        with open(file_path) as content_file:
-            content = content_file.read()
+        with open(src) as f:
+            content = f.read()
             template = jinja2.Template(content)
 
             try:
                 content = template.render(**context)
             except jinja2.exceptions.UndefinedError as error:
-                text = '%s\n' % file_path
+                text = '%s\n' % src
                 text += Color().text('RED', error)
 
                 print(text)
                 sys.exit(1)
 
-        # TODO: copy owner, group and permission from src to tmp file
         with open(tmp.name, 'w') as tmp_file:
             tmp_file.write(content)
 
         return tmp_file.name
 
-    def _diff(self, file_path, dest_path):
+    def _create_tmp_file(self, src):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        path_src = Path(src)
+        src_stat = path_src.stat()
+
+        Path(tmp.name).chmod(src_stat.st_mode)
+        shutil.chown(tmp.name, path_src.owner(), path_src.group())
+
+        return tmp
+
+    def _diff(self, src, dst):
         output = ''
 
         try:
-            text1 = open(dest_path, 'r').readlines()
-            text2 = open(file_path, 'r').readlines()
+            text1 = open(dst, 'r').readlines()
+            text2 = open(src, 'r').readlines()
 
             for line in difflib.unified_diff(text1, text2):
                 if line.startswith('+'):
@@ -170,11 +179,11 @@ class Files:
     def _has_changed(self, src, dst):
         path_src = Path(src)
         path_dst = Path(dst)
-        
+
         src_stat = path_src.stat()
         dst_stat = path_dst.stat()
 
-        modified = src_stat.st_mtime > dst_stat.st_mtime 
+        modified = src_stat.st_mtime > dst_stat.st_mtime
         owner_changed = src_stat.st_uid != dst_stat.st_uid
         group_changed = src_stat.st_gid != dst_stat.st_gid
         permission_changed = src_stat.st_mode != dst_stat.st_mode
@@ -188,11 +197,11 @@ class Files:
             ]
         )
 
-    def _get_original_file_path(self, file_path):
-        if os.path.islink(file_path):
-            return os.readlink(file_path)
+    def _get_original_file_path(self, src):
+        if os.path.islink(src):
+            return os.readlink(src)
 
-        return file_path
+        return src
 
     def _copy(self, src, dst):
         path_src = Path(src)
@@ -266,6 +275,7 @@ class Files:
                             self._copy(tmp_path, dest_path)
                             os.remove(tmp_path)
                         else:
+                            # TODO: check owner, group and permissions!
                             if os.path.islink(file_path):
                                 linkto = os.readlink(file_path)
                                 os.remove(dest_path)
@@ -296,7 +306,7 @@ class Packages:
 
         for pkg, pkg_options in pkgs.items():
             ensure = 'installed'
-            
+ 
             if isinstance(pkg_options, dict):
                 ensure = pkg_options.get('ensure', ensure)
 
