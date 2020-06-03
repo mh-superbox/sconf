@@ -4,19 +4,24 @@ from pathlib import Path
 import argparse
 import difflib
 import os
-import pathlib
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
+from colorama import init, Fore, Style
 import jinja2
 import jsonschema
 import yaml
 
-BASE_PATH = "/etc/sconf/"
-MODULES_PATH = os.path.join(BASE_PATH, "modules")
+init(autoreset=True)
+
+RED = Fore.RED + Style.BRIGHT
+GREEN = Fore.GREEN + Style.BRIGHT
+
+BASE_PATH = Path('/etc/sconf')
+MODULES_PATH = BASE_PATH.joinpath('modules')
 
 # TODO: write schema validation for packages and services!
 # TODO: write regex check for package, service and variables names!
@@ -41,38 +46,19 @@ SCHEMA = {
 }
 
 
-class Color:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
-
-    def text(self, color, text):
-        return '%s%s%s' % (
-            getattr(self, color), text, self.END
-        )
-
-
 class Config:
     def __init__(self):
         for path in [BASE_PATH, MODULES_PATH]:
-            if not os.path.exists(path):
-                text = 'Directory %s%s%s does not exist!' % (
-                    Color.BOLD,
-                    path,
-                    Color.END,
-                )
-
-                print(text)
+            if not path.exists():
+                print(f'Directory { path } does not exist!')
                 sys.exit(1)
 
     def _get_data(self, file_path, schema=None, context=None):
         data = None
-        text = '%s\n' % file_path
 
         try:
-            with open(file_path, 'r') as content_yaml:
-                content = content_yaml.read()
+            with open(file_path, 'r') as f:
+                content = f.read()
 
                 if context:
                     template = jinja2.Template(content)
@@ -87,78 +73,73 @@ class Config:
                         print(error)
                         sys.exit(1)
         except IOError:
-            text += Color().text(
-                'RED',
-                'YAML file can not be read!'
-            )
-
-            print(text)
-            sys.exit(1)
+            print(f'{ file_path }')
+            print(f'{ RED } YAML file can not be read!')
         except yaml.YAMLError as error:
-            text += Color().text(
-                'RED',
-                'Failed loading config file because the YAML is invalid!'
-            )
-
-            print(text)
+            print(f'{ file_path }')
+            print(f'{ RED } Failed loading config file because the YAML is invalid!')  # noqa
             print(error)
-            sys.exit(1)
 
         return data
 
     def module_data(self, module, context=None):
-        config_yaml = os.path.join(BASE_PATH, 'modules', module, 'config.yaml')
+        config_yaml = BASE_PATH.joinpath('modules', module, 'config.yaml')
 
-        config = self._get_data(
+        return self._get_data(
             config_yaml,
             schema=SCHEMA['module_config'],
             context=context,
         )
 
-        return config
-
     def global_data(self, file_name):
-        file_name = '%s.yaml' % file_name
-        data_yaml = os.path.join(BASE_PATH, 'global', file_name)
-        data = self._get_data(data_yaml)
+        file_name = f'{ file_name }.yaml'
+        data_yaml = BASE_PATH.joinpath('global', file_name)
 
-        return data
+        return self._get_data(data_yaml)
 
 
 class Files:
     def _render_template(self, src, context={}):
-        tmp = self._create_tmp_file(src)
+        tmp = self._create_tempfile(src)
+        content = None
 
-        with open(src) as f:
-            content = f.read()
-            template = jinja2.Template(content)
+        try:
+            with open(src) as f:
+                content = f.read()
 
-            try:
-                content = template.render(**context)
-            except jinja2.exceptions.UndefinedError as error:
-                text = '%s\n' % src
-                text += Color().text('RED', error)
+                try:
+                    if content:
+                        template = jinja2.Template(content)
+                        content = template.render(**context)
+                except jinja2.exceptions.TemplateSyntaxError as error:
+                    print(f'{ src }')
+                    print(f'{ RED }{ error }')
+                except jinja2.exceptions.UndefinedError as error:
+                    print(f'{ src }')
+                    print(f'{ RED }{ error }')
 
-                print(text)
-                sys.exit(1)
+            with open(tmp, 'w') as f:
+                f.write(content)
+        except IsADirectoryError as error:
+            print(f'{ src }')
+            print(f'{ RED }JINJA file is a directory!')
 
-        with open(tmp.name, 'w') as tmp_file:
-            tmp_file.write(content)
+        return tmp
 
-        return tmp_file.name
-
-    def _create_tmp_file(self, src):
+    def _create_tempfile(self, src):
         tmp = tempfile.NamedTemporaryFile(delete=False)
-        path_src = Path(src)
-        src_stat = path_src.stat()
+        tmp = Path(tmp.name)
 
-        Path(tmp.name).chmod(src_stat.st_mode)
-        shutil.chown(tmp.name, path_src.owner(), path_src.group())
+        src = Path(src)
+        src_stat = src.stat()
+
+        tmp.chmod(src_stat.st_mode)
+        shutil.chown(tmp, src.owner(), src.group())
 
         return tmp
 
     def _diff(self, src, dst):
-        output = ''
+        output = []
 
         try:
             text1 = open(dst, 'r').readlines()
@@ -166,22 +147,25 @@ class Files:
 
             for line in difflib.unified_diff(text1, text2):
                 if line.startswith('+'):
-                    line = '%s%s%s' % (Color.GREEN, line, Color.END)
+                    line = f'{ GREEN }{ line }'
                 elif line.startswith('-'):
-                    line = '%s%s%s' % (Color.RED, line, Color.END)
+                    line = f'{ RED }{ line }'
 
-                output += '   %s' % line
+                if not line.endswith('\n'):
+                    line = f'{ line }\n'
+
+                output.append(f'   { line }{ Style.RESET_ALL }')
         except UnicodeDecodeError:
             pass
 
-        return output
+        if output:
+            output.insert(0, '\n')
+
+        return ''.join(output)
 
     def _has_changed(self, src, dst):
-        path_src = Path(src)
-        path_dst = Path(dst)
-
-        src_stat = path_src.stat()
-        dst_stat = path_dst.stat()
+        src_stat = src.stat()
+        dst_stat = dst.stat()
 
         modified = src_stat.st_mtime > dst_stat.st_mtime
         owner_changed = src_stat.st_uid != dst_stat.st_uid
@@ -197,99 +181,75 @@ class Files:
             ]
         )
 
-    def _get_original_file_path(self, src):
-        if os.path.islink(src):
+    def _get_original_src(self, src):
+        if src.is_symlink():
             return os.readlink(src)
 
         return src
 
     def _copy(self, src, dst):
-        path_src = Path(src)
-        shutil.copy2(src, dst)
-        shutil.chown(dst, path_src.owner(), path_src.group())
+        shutil.copy2(src, dst, follow_symlinks=False)
+        shutil.chown(dst, src.owner(), src.group())
 
     def copy(self, config, module_path, context={}):
         if config is None:
             config = {}
 
-        files_path = os.path.join(module_path, 'files')
+        files = Path(module_path, 'files')
 
-        if os.path.isdir(files_path):
+        if files.is_dir():
             local_variables = config.get('variables', {})
 
-            for file_path in pathlib.Path(files_path).rglob('*'):
-                if os.path.isdir(file_path):
+            for src in files.rglob('*'):
+                if src.is_dir() and not src.is_symlink():
                     continue
 
-                file_name, file_extension = os.path.splitext(file_path)
-                src_path = os.path.dirname(file_path)
+                dst = Path(str(src.parent).replace(str(files), ''), src.name)
+                dst_name = str(dst)
 
-                dest_path = os.path.join(
-                    src_path.replace(files_path, ''),
-                    file_path.name,
-                )
-
-                if file_extension == '.jinja':
+                if src.suffix == '.jinja':
                     context = {**context, **local_variables}
+                    tmp_src = self._render_template(src, context)
 
-                    tmp_path = self._render_template(
-                        file_path,
-                        context=context,
-                    )
+                    dst_name = dst_name[:-6]
+                    dst = Path(dst_name)
 
-                    dest_path = dest_path[:-6]
-
-                original_file_path = self._get_original_file_path(file_path)
+                original_src = self._get_original_src(src)
                 diff_output = None
                 copy_file = False
 
-                if os.path.exists(dest_path):
-                    has_changed = self._has_changed(file_path, dest_path)
+                if dst.exists():
+                    has_changed = self._has_changed(src, dst)
 
                     if has_changed:
                         copy_file = True
 
-                        if file_extension == '.jinja':
-                            original_file_path = tmp_path
+                        if src.suffix == '.jinja':
+                            original_src = tmp_src
 
-                        diff_output = self._diff(
-                            original_file_path,
-                            dest_path,
-                        )
+                        diff_output = self._diff(original_src, dst)
 
-                        if os.path.islink(file_path):
-                            print('├─ Update symlink %s' % dest_path)
+                        if src.is_symlink():
+                            print(f'├─ Update symlink { dst_name }')
                         else:
-                            print('├─ Update file %s' % dest_path)
+                            print(f'├─ Update file { dst_name }')
                 else:
                     copy_file = True
 
-                    if os.path.islink(file_path):
-                        print('├─ Create symlink %s' % dest_path)
+                    if src.is_symlink():
+                        print(f'├─ Create symlink { dst_name }')
                     else:
-                        print('├─ Create file %s' % dest_path)
+                        print(f'├─ Create file { dst_name }')
 
                 try:
                     if copy_file is True:
-                        if file_extension == '.jinja':
-                            self._copy(tmp_path, dest_path)
-                            os.remove(tmp_path)
+                        if src.suffix == '.jinja':
+                            self._copy(tmp_src, dst)
+                            tmp_src.unlink()
                         else:
-                            # TODO: check owner, group and permissions!
-                            if os.path.islink(file_path):
-                                linkto = os.readlink(file_path)
-                                os.remove(dest_path)
-                                os.symlink(linkto, dest_path)
-                            else:
-                                self._copy(file_path, dest_path)
+                            self._copy(src, dst)
                 except FileNotFoundError as error:
-                    text = Color().text(
-                        'RED',
-                        'File or directory does not exist!',
-                    )
-
-                    print(text)
-                    sys.exit(1)
+                    print(f'{ RED }File or directory does not exist!')
 
                 if diff_output:
                     print(diff_output)
@@ -306,7 +266,7 @@ class Packages:
 
         for pkg, pkg_options in pkgs.items():
             ensure = 'installed'
- 
+
             if isinstance(pkg_options, dict):
                 ensure = pkg_options.get('ensure', ensure)
 
@@ -323,11 +283,11 @@ class Packages:
             if ensure == 'installed':
                 if 'install ok installed' not in out:
                     apt_cmd = 'install'
-                    print('├─ Install package [%s]' % pkg)
+                    print(f'├─ Install package [{ pkg }]')
             elif ensure == 'purged':
                 if 'install ok installed' in out:
                     apt_cmd = 'purge'
-                    print('├─ Purge package [%s]' % pkg)
+                    print(f'├─ Purge package [{ pkg }]')
 
             if apt_cmd:
                 subprocess.call(
@@ -378,12 +338,7 @@ class Services:
             exists = self.exists(service)
 
             if not exists:
-                text = Color().text(
-                    'RED',
-                    '├─ Service [%s] not exists!' % service,
-                )
-
-                print(text)
+                print(f'{ RED } ├─ Service [{ service }] not exists!')
                 sys.exit(1)
 
             is_active = self.is_active(service)
@@ -392,21 +347,21 @@ class Services:
             if enabled is not None:
                 if is_enabled is True and enabled == 'false':
                     self.command(service, 'disable')
-                    print('├─ Service [%s] disabled' % service)
+                    print(f'├─ Service [{ service }] disabled')
                 elif is_enabled is False and enabled == 'true':
                     self.command(service, 'enable')
-                    print('├─ Service [%s] enabled' % service)
+                    print(f'├─ Service [{ service }] enabled')
 
             if ensure is not None:
                 if is_active is True and ensure == 'stopped':
                     self.command(service, 'stop')
-                    print('├─ Service [%s] stopped' % service)
+                    print(f'├─ Service [{ service }] stopped')
                 elif is_active is False and ensure == 'running':
-                    print('├─ Service [%s] started' % service)
+                    print(f'├─ Service [{ service }] started')
                     self.command(service, 'start')
                 elif ensure == 'running':
                     if not self.args.no_service_restart:
-                        print('├─ Service [%s] restarted' % service)
+                        print(f'├─ Service [{ service }] restarted')
                         self.command(service, 'restart')
 
     def exists(self, service):
@@ -473,42 +428,24 @@ class ServerConf:
         self.variables = Config().global_data('variables')
 
     def install_modules(self):
-        for module in os.listdir(MODULES_PATH):
+        for module in MODULES_PATH.glob('*'):
             self.install_module(module)
 
     # TODO: Added YAML file for module install order and enable/disable option!
     def install_module(self, module):
-        module_path = os.path.join(MODULES_PATH, module)
+        module_path = MODULES_PATH.joinpath(module)
+        module_name = module_path.name
 
-        if os.path.isdir(module_path):
-            text = '%sInstall %s module %s' % (
-                Color.BOLD,
-                os.path.basename(module_path),
-                Color.END,
-            )
+        if module_path.is_dir():
+            print(f'{ Style.BRIGHT }Install { module_name } module')
 
-            print(text)
-
-            config = Config().module_data(
-                module,
-                context=self.variables,
-            )
+            config = Config().module_data(module, self.variables)
 
             Packages().install(config)
-
-            Files().copy(
-                config,
-                module_path,
-                context=self.variables,
-            )
-
+            Files().copy(config, module_path, self.variables)
             Services(self.args).check(config)
         else:
-            text = 'Module %s not found!' % (
-                os.path.basename(module_path),
-            )
-
-            print(text)
+            print(f'{ RED }Cannot install module { module_name }!')
 
 
 def arguments():
