@@ -6,6 +6,7 @@ import difflib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -182,6 +183,32 @@ class Files:
             ]
         )
 
+    def _owner_changed(self, src, dst):
+        src_owner = src.owner()
+        dst_owner = dst.owner()
+
+        if src_owner != dst_owner:
+            print(f'   ├─ Owner changed from { src_owner } to { dst_owner }')
+
+    def _group_changed(self, src, dst):
+        src_group = src.group()
+        dst_group = dst.group()
+
+        if src_group != dst_group:
+            print(f'   ├─ Group changed from { src_group } to { dst_group }')
+
+    def _permission_changed(self, src, dst):
+        src_stat = src.stat()
+        dst_stat = dst.stat()
+
+        src_mode = oct(src_stat.st_mode)[4:]
+        dst_mode = oct(dst_stat.st_mode)[4:]
+        src_mode_hr = stat.filemode(src_stat.st_mode)
+        dst_mode_hr = stat.filemode(dst_stat.st_mode)
+
+        if src_mode != dst_mode:
+            print(f'   ├─ Permission changed from { src_mode } ({ src_mode_hr}) to { dst_mode } ({ dst_mode_hr})')  # noqa
+
     def _get_original_src(self, src):
         if src.is_symlink():
             return os.readlink(src)
@@ -207,6 +234,7 @@ class Files:
             local_variables = config.get('variables', {})
 
             for src in files.rglob('*'):
+                # TODO: update permissions of directories!
                 if src.is_dir() and not src.is_symlink():
                     continue
 
@@ -239,6 +267,10 @@ class Files:
                             print(f'├─ Update symlink { dst_name }')
                         else:
                             print(f'├─ Update file { dst_name }')
+
+                        self._owner_changed(src, dst)
+                        self._group_changed(src, dst)
+                        self._permission_changed(src, dst)
                 else:
                     copy_file = True
 
