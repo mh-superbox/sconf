@@ -117,6 +117,7 @@ class Files:
                 except jinja2.exceptions.UndefinedError as error:
                     print(f'{ src }')
                     print(f'{ RED }{ error }')
+                    sys.exit(1)
 
             with open(tmp, 'w') as f:
                 f.write(content)
@@ -189,7 +190,12 @@ class Files:
 
     def _copy(self, src, dst):
         shutil.copy2(src, dst, follow_symlinks=False)
-        shutil.chown(dst, src.owner(), src.group())
+
+        try:
+            shutil.chown(dst, src.owner(), src.group())
+        except KeyError as error:
+            print(f'{ src }')
+            print(f'{ RED }{ error }')
 
     def copy(self, config, module_path, context={}):
         if config is None:
@@ -248,6 +254,8 @@ class Files:
                             tmp_src.unlink()
                         else:
                             self._copy(src, dst)
+                except FileExistsError as error:
+                    print(f'{ RED }File or directory already exists!')
                 except FileNotFoundError as error:
                     print(f'{ RED }File or directory does not exist!')
 
