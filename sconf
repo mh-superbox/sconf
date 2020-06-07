@@ -18,6 +18,7 @@ import yaml
 
 init(autoreset=True)
 
+# TODO: check error prints tab index
 RED = Fore.RED + Style.BRIGHT
 GREEN = Fore.GREEN + Style.BRIGHT
 
@@ -100,7 +101,19 @@ class Config:
 
 
 class Files:
-    def _render_template(self, src, context={}):
+    def __init__(self, config, module_path, context={}):
+        if config is None:
+            config = {}
+
+        self.files = Path(module_path, 'files')
+
+        if not self.files.is_dir():
+            # TODO: print error
+            pass
+
+        self.context = {**context, **config.get('variables', {})}
+
+    def _render_template(self, src):
         tmp = self._create_tempfile(src)
         content = None
 
@@ -111,7 +124,7 @@ class Files:
                 try:
                     if content:
                         template = jinja2.Template(content)
-                        content = template.render(**context)
+                        content = template.render(**self.context)
                 except jinja2.exceptions.TemplateSyntaxError as error:
                     print(f'{ src }')
                     print(f'{ RED }{ error }')
@@ -169,7 +182,11 @@ class Files:
         src_stat = src.stat()
         dst_stat = dst.stat()
 
-        modified = src_stat.st_mtime > dst_stat.st_mtime
+        if src.is_dir() and not src.is_symlink():
+            modified = False
+        else:
+            modified = src_stat.st_mtime > dst_stat.st_mtime
+
         owner_changed = src_stat.st_uid != dst_stat.st_uid
         group_changed = src_stat.st_gid != dst_stat.st_gid
         permission_changed = src_stat.st_mode != dst_stat.st_mode
@@ -184,18 +201,22 @@ class Files:
         )
 
     def _owner_changed(self, src, dst):
-        src_owner = src.owner()
-        dst_owner = dst.owner()
+        try:
+            src_owner = src.owner()
+            dst_owner = dst.owner()
+        except KeyError as error:
+            print(f'   ├─ { RED }{ error }')
+            sys.exit(1)
 
         if src_owner != dst_owner:
-            print(f'   ├─ Owner changed from { src_owner } to { dst_owner }')
+            print(f'   ├─ Owner changed from { dst_owner } to { src_owner }')
 
     def _group_changed(self, src, dst):
         src_group = src.group()
         dst_group = dst.group()
 
         if src_group != dst_group:
-            print(f'   ├─ Group changed from { src_group } to { dst_group }')
+            print(f'   ├─ Group changed from { dst_group } to { src_group }')
 
     def _permission_changed(self, src, dst):
         src_stat = src.stat()
@@ -207,7 +228,7 @@ class Files:
         dst_mode_hr = stat.filemode(dst_stat.st_mode)
 
         if src_mode != dst_mode:
-            print(f'   ├─ Permission changed from { src_mode } ({ src_mode_hr}) to { dst_mode } ({ dst_mode_hr})')  # noqa
+            print(f'   ├─ Permission changed from { dst_mode } ({ dst_mode_hr }) to { src_mode } ({ src_mode_hr })')  # noqa
 
     def _get_original_src(self, src):
         if src.is_symlink():
@@ -217,82 +238,92 @@ class Files:
 
     def _copy(self, src, dst):
         shutil.copy2(src, dst, follow_symlinks=False)
+        shutil.chown(dst, src.owner(), src.group())
 
-        try:
-            shutil.chown(dst, src.owner(), src.group())
-        except KeyError as error:
-            print(f'{ src }')
-            print(f'{ RED }{ error }')
+    def _copy_file(self, src, dst):
+        dst_name = str(dst)
 
-    def copy(self, config, module_path, context={}):
-        if config is None:
-            config = {}
+        if src.suffix == '.jinja':
+            tmp_src = self._render_template(src)
 
-        files = Path(module_path, 'files')
+            dst_name = dst_name[:-6]
+            dst = Path(dst_name)
 
-        if files.is_dir():
-            local_variables = config.get('variables', {})
+        original_src = self._get_original_src(src)
+        diff_output = None
+        copy_file = False
 
-            for src in files.rglob('*'):
-                # TODO: update permissions of directories!
-                if src.is_dir() and not src.is_symlink():
-                    continue
+        if dst.exists():
+            has_changed = self._has_changed(src, dst)
 
-                dst = Path(str(src.parent).replace(str(files), ''), src.name)
-                dst_name = str(dst)
+            if has_changed:
+                copy_file = True
 
                 if src.suffix == '.jinja':
-                    context = {**context, **local_variables}
-                    tmp_src = self._render_template(src, context)
+                    original_src = tmp_src
 
-                    dst_name = dst_name[:-6]
-                    dst = Path(dst_name)
+                diff_output = self._diff(original_src, dst)
 
-                original_src = self._get_original_src(src)
-                diff_output = None
-                copy_file = False
-
-                if dst.exists():
-                    has_changed = self._has_changed(src, dst)
-
-                    if has_changed:
-                        copy_file = True
-
-                        if src.suffix == '.jinja':
-                            original_src = tmp_src
-
-                        diff_output = self._diff(original_src, dst)
-
-                        if src.is_symlink():
-                            print(f'├─ Update symlink { dst_name }')
-                        else:
-                            print(f'├─ Update file { dst_name }')
-
-                        self._owner_changed(src, dst)
-                        self._group_changed(src, dst)
-                        self._permission_changed(src, dst)
+                if src.is_symlink():
+                    print(f'├─ Update symlink { dst_name }')
                 else:
-                    copy_file = True
+                    print(f'├─ Update file { dst_name }')
 
-                    if src.is_symlink():
-                        print(f'├─ Create symlink { dst_name }')
-                    else:
-                        print(f'├─ Create file { dst_name }')
+                self._owner_changed(src, dst)
+                self._group_changed(src, dst)
+                self._permission_changed(src, dst)
+        else:
+            copy_file = True
 
-                try:
-                    if copy_file is True:
-                        if src.suffix == '.jinja':
-                            self._copy(tmp_src, dst)
-                            tmp_src.unlink()
-                        else:
-                            self._copy(src, dst)
-                except FileExistsError as error:
-                    print(f'{ RED }File or directory already exists!')
-                except FileNotFoundError as error:
-                    print(f'{ RED }File or directory does not exist!')
+            if src.is_symlink():
+                print(f'├─ Create symlink { dst_name }')
+            else:
+                print(f'├─ Create file { dst_name }')
 
-                if diff_output:
-                    print(diff_output)
+        try:
+            if copy_file is True:
+                if src.suffix == '.jinja':
+                    self._copy(tmp_src, dst)
+                    tmp_src.unlink()
+                else:
+                    self._copy(src, dst)
+        except FileExistsError as error:
+            print(f'{ RED }File or directory already exists!')
+        except FileNotFoundError as error:
+            print(f'{ RED }File or directory does not exist!')
+
+        if diff_output:
+            print(diff_output)
+
+    def copy(self, src=None):
+        if src is None:
+            src = self.files
+
+        for name in src.iterdir():
+            _src = src.joinpath(name)
+
+            dst_path = str(_src.parent).replace(str(self.files), '') or '/'
+            dst = Path(dst_path, _src.name)
+
+            if _src.is_dir() and not _src.is_symlink():
+                dst.mkdir(exist_ok=True)
+                self.copy(_src)
+
+                has_changed = self._has_changed(_src, dst)
+
+                if has_changed:
+                    dst_name = str(dst)
+
+                    print(f'├─ Update directory { dst_name }')
+
+                    self._owner_changed(_src, dst)
+                    self._group_changed(_src, dst)
+                    self._permission_changed(_src, dst)
+
+                    shutil.copystat(_src, dst)
+                    shutil.chown(dst, _src.owner(), _src.group())
+            else:
+                self._copy_file(_src, dst)
 
 
 class Packages:
@@ -479,10 +510,17 @@ class ServerConf:
         if module_path.is_dir():
             print(f'{ Style.BRIGHT }Install { module_name } module')
 
+            # TODO: Parameters to init
             config = Config().module_data(module, self.variables)
 
             Packages().install(config)
-            Files().copy(config, module_path, self.variables)
+
+            Files(
+                config=config,
+                module_path=module_path,
+                context=self.variables,
+            ).copy()
+
             Services(self.args).check(config)
         else:
             print(f'{ RED }Cannot install module { module_name }!')
