@@ -18,7 +18,6 @@ import yaml
 
 init(autoreset=True)
 
-# TODO: check error prints tab index
 RED = Fore.RED + Style.BRIGHT
 GREEN = Fore.GREEN + Style.BRIGHT
 
@@ -52,7 +51,7 @@ class Config:
     def __init__(self):
         for path in [BASE_PATH, MODULES_PATH]:
             if not path.exists():
-                print(f'Directory { path } does not exist!')
+                print(f'{ RED }Directory { path } does not exist!')
                 sys.exit(1)
 
     def _get_data(self, file_path, schema=None, context=None):
@@ -75,11 +74,9 @@ class Config:
                         print(error)
                         sys.exit(1)
         except IOError:
-            print(f'{ file_path }')
-            print(f'{ RED } YAML file can not be read!')
+            print(f'   ├─ { RED }Cannot read <{ file_path.name }> file!')
         except yaml.YAMLError as error:
-            print(f'{ file_path }')
-            print(f'{ RED } Failed loading config file because the YAML is invalid!')  # noqa
+            print(f'   ├─ { RED }Invalid YAML syntax in <{ file_path.name }>!\n')  # noqa
             print(error)
 
         return data
@@ -105,16 +102,18 @@ class Files:
         if config is None:
             config = {}
 
+        self.module_path = module_path
         self.files = Path(module_path, 'files')
 
         if not self.files.is_dir():
-            # TODO: print error
-            pass
+            print(f'   ├─ { RED }Directory { self.files } does not exist!')
+            sys.exit(1)
 
         self.context = {**context, **config.get('variables', {})}
 
     def _render_template(self, src):
         tmp = self._create_tempfile(src)
+        error_src = str(src).replace(f'{ self.module_path}/', '')
         content = None
 
         try:
@@ -126,18 +125,18 @@ class Files:
                         template = jinja2.Template(content)
                         content = template.render(**self.context)
                 except jinja2.exceptions.TemplateSyntaxError as error:
-                    print(f'{ src }')
-                    print(f'{ RED }{ error }')
+                    print(f'├─ { error_src }')
+                    print(f'   ├─ { RED }{ error }')
                 except jinja2.exceptions.UndefinedError as error:
-                    print(f'{ src }')
-                    print(f'{ RED }{ error }')
+                    print(f'├─ { error_src }')
+                    print(f'   ├─ { RED }{ error }')
                     sys.exit(1)
 
             with open(tmp, 'w') as f:
                 f.write(content)
         except IsADirectoryError as error:
-            print(f'{ src }')
-            print(f'{ RED }JINJA file is a directory!')
+            print(f'   ├─ { error_src }')
+            print(f'      ├─ { RED }JINJA file is a directory!')
 
         return tmp
 
@@ -409,7 +408,7 @@ class Services:
             exists = self.exists(service)
 
             if not exists:
-                print(f'{ RED } ├─ Service [{ service }] not exists!')
+                print(f'{ RED }├─ Service [{ service }] not exists!')
                 sys.exit(1)
 
             is_active = self.is_active(service)
